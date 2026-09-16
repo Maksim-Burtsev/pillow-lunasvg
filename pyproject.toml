@@ -1,0 +1,78 @@
+[build-system]
+requires = ["scikit-build-core>=0.11", "pybind11>=3.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pillow-lunasvg"
+version = "0.1.0"
+description = "SVG read support for Pillow, powered by LunaSVG"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = [
+  "LICENSE",
+  "third_party/lunasvg/LICENSE",
+  "third_party/lunasvg/plutovg/LICENSE",
+  "third_party/lunasvg/plutovg/source/FTL.TXT",
+  "LICENSES/stb.txt",
+]
+authors = [{ name = "Maksim Burtsev", email = "mburtsev17@gmail.com" }]
+keywords = ["svg", "pillow", "pil", "plugin", "lunasvg", "image", "vector", "render", "rasterize", "thumbnail"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+  "Typing :: Typed",
+]
+dependencies = ["Pillow>=10.1"]
+
+[project.urls]
+Homepage = "https://github.com/Maksim-Burtsev/pillow-lunasvg"
+Issues = "https://github.com/Maksim-Burtsev/pillow-lunasvg/issues"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.scikit-build]
+minimum-version = "0.11"
+cmake.version = ">=3.15"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/pillow_lunasvg"]
+
+# The sdist vendors the lunasvg submodule; keep only what the build needs.
+[tool.scikit-build.sdist]
+exclude = [
+  "third_party/lunasvg/examples",
+  "third_party/lunasvg/subprojects",
+  "third_party/lunasvg/meson.build",
+  "third_party/lunasvg/meson_options.txt",
+  "third_party/lunasvg/.github",
+  "third_party/lunasvg/plutovg/examples",
+  "third_party/lunasvg/plutovg/meson.build",
+  "third_party/lunasvg/plutovg/meson_options.txt",
+  "third_party/lunasvg/plutovg/smiley.png",
+  "third_party/lunasvg/plutovg/.github",
+  "benchmarks",
+]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "cp3??t-*"
+build-verbosity = 1
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests"
+test-skip = "*-macosx_x86_64"
+
+[tool.cibuildwheel.macos.environment]
+MACOSX_DEPLOYMENT_TARGET = "10.9"
