@@ -259,7 +259,8 @@ def test_hostile_use_cycles():
 )
 def test_hostile_dasharray(dash):
     # Past the dash budget the path is stroked solid instead of hanging.
-    svg = f'<svg {NS} width="100" height="100"><path d="M0 50 L100000000 50" stroke="black" stroke-width="4" {dash}/></svg>'
+    # 2e6 keeps 26.6 fixed-point coordinates within a 32-bit long (Windows).
+    svg = f'<svg {NS} width="100" height="100"><path d="M0 50 L2000000 50" stroke="black" stroke-width="4" {dash}/></svg>'
     assert "bbox (0, 48, 100, 52)" in run_isolated(svg)
 
 
