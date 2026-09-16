@@ -6,6 +6,10 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <algorithm>
 
 #include <pybind11/pybind11.h>
 
@@ -26,46 +30,218 @@ std::mutex g_lunasvg_mutex;
 // nested document overflows the native stack. Same default as libxml2.
 constexpr int kMaxDepth = 256;
 
-// Mirrors LunaSVG's tokenizer closely enough that comments, CDATA, DOCTYPE
-// and quoted attribute values cannot hide or fake tags.
-bool NestingWithinLimit(std::string_view s) {
-  int depth = 0;
-  auto skip_past = [&](size_t from, std::string_view end) {
-    size_t n = s.find(end, from);
-    return n == std::string_view::npos ? s.size() : n + end.size();
-  };
-  size_t i = 0;
-  while ((i = s.find('<', i)) != std::string_view::npos) {
-    std::string_view rest = s.substr(i);
-    if (rest.substr(0, 4) == "<!--") {
-      i = skip_past(i + 4, "-->");
-    } else if (rest.substr(0, 9) == "<![CDATA[") {
-      i = skip_past(i + 9, "]]>");
-    } else if (rest.substr(0, 2) == "<?") {
-      i = skip_past(i + 2, "?>");
-    } else if (rest.substr(0, 2) == "<!") {
-      int brackets = 0;
-      for (++i; i < s.size() && (s[i] != '>' || brackets > 0); ++i) {
-        if (s[i] == '[') ++brackets;
-        if (s[i] == ']') --brackets;
+// LunaSVG expands every <use> into a deep copy of its target, and a copied
+// <use> is expanded again, so a short chain of <use> grows exponentially.
+constexpr int64_t kMaxElements = 200000;
+
+// Attribute values as LunaSVG's decodeText() sees them: character and the five
+// predefined entity references; on a malformed reference it keeps the prefix.
+std::string DecodeValue(std::string_view in) {
+  std::string out;
+  while (!in.empty()) {
+    char ch = in.front();
+    in.remove_prefix(1);
+    if (ch != '&') {
+      out.push_back(ch);
+      continue;
+    }
+    if (!in.empty() && in.front() == '#') {
+      in.remove_prefix(1);
+      int base = 10;
+      if (!in.empty() && in.front() == 'x') {
+        base = 16;
+        in.remove_prefix(1);
       }
-    } else if (rest.substr(0, 2) == "</") {
-      depth = depth > 0 ? depth - 1 : 0;
-      i = skip_past(i + 2, ">");
+      if (!in.empty() && in.front() == '+') in.remove_prefix(1);
+      uint64_t cp = 0;
+      size_t digits = 0;
+      for (; digits < in.size() && std::isxdigit(static_cast<unsigned char>(in[digits])); ++digits) {
+        char c = in[digits];
+        int d = std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : std::tolower(c) - 'a' + 10;
+        if (d >= base) break;
+        cp = cp * base + d;
+        if (cp > UINT_MAX) return out;
+      }
+      if (digits == 0) return out;
+      in.remove_prefix(digits);
+      char c[5] = {0, 0, 0, 0, 0};
+      if (cp < 0x80) {
+        c[0] = char(cp);
+      } else if (cp < 0x800) {
+        c[1] = char((cp & 0x3F) | 0x80), c[0] = char((cp >> 6) | 0xC0);
+      } else if (cp < 0x10000) {
+        c[2] = char((cp & 0x3F) | 0x80), c[1] = char(((cp >> 6) & 0x3F) | 0x80),
+        c[0] = char((cp >> 12) | 0xE0);
+      } else if (cp < 0x200000) {
+        c[3] = char((cp & 0x3F) | 0x80), c[2] = char(((cp >> 6) & 0x3F) | 0x80),
+        c[1] = char(((cp >> 12) & 0x3F) | 0x80), c[0] = char((cp >> 18) | 0xF0);
+      }
+      out.append(c);
     } else {
-      bool self_closing = false;
-      for (++i; i < s.size() && s[i] != '>'; ++i) {
-        if (s[i] == '"' || s[i] == '\'') {
-          i = s.find(s[i], i + 1);
-          if (i == std::string_view::npos) return true;  // unterminated: parser rejects it
+      static const std::pair<std::string_view, char> names[] = {
+          {"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''}};
+      bool found = false;
+      for (const auto& [name, value] : names) {
+        if (in.substr(0, name.size()) == name) {
+          in.remove_prefix(name.size());
+          out.push_back(value);
+          found = true;
+          break;
         }
-        self_closing = s[i] == '/';
       }
-      if (!self_closing && ++depth > kMaxDepth) return false;
+      if (!found) return out;
+    }
+    if (in.empty() || in.front() != ';') return out;
+    in.remove_prefix(1);
+  }
+  return out;
+}
+
+struct ScanNode {
+  std::vector<int> children;
+  std::vector<std::string> use_targets;  // ids referenced by href/xlink:href on <use>
+};
+
+struct Expanded {
+  int64_t count;
+  int height;
+  bool exact;  // false if a reference cycle was cut, so the result must not be memoized
+};
+
+class StructureCheck {
+ public:
+  explicit StructureCheck(std::string_view s) : s_(s) {}
+
+  // Returns an error message, or nullptr if the document is within limits.
+  const char* Run() {
+    Tokenize();
+    memo_.assign(nodes_.size(), {-1, 0, true});
+    active_.assign(nodes_.size(), false);
+    if (!Expand(0, 0)) return error_;
+    return nullptr;
+  }
+
+ private:
+  // Mirrors LunaSVG's tokenizer closely enough that comments, CDATA, DOCTYPE
+  // and quoted attribute values cannot hide or fake tags or ids.
+  void Tokenize() {
+    nodes_.emplace_back();  // the document
+    std::vector<int> open = {0};
+    size_t i = 0;
+    auto skip_past = [&](size_t from, std::string_view end) {
+      size_t n = s_.find(end, from);
+      return n == std::string_view::npos ? s_.size() : n + end.size();
+    };
+    auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+    while ((i = s_.find('<', i)) != std::string_view::npos) {
+      std::string_view rest = s_.substr(i);
+      if (rest.substr(0, 4) == "<!--") {
+        i = skip_past(i + 4, "-->");
+      } else if (rest.substr(0, 9) == "<![CDATA[") {
+        i = skip_past(i + 9, "]]>");
+      } else if (rest.substr(0, 2) == "<?") {
+        i = skip_past(i + 2, "?>");
+      } else if (rest.substr(0, 2) == "<!") {
+        int brackets = 0;
+        for (++i; i < s_.size() && (s_[i] != '>' || brackets > 0); ++i) {
+          if (s_[i] == '[') ++brackets;
+          if (s_[i] == ']') --brackets;
+        }
+      } else if (rest.substr(0, 2) == "</") {
+        if (open.size() > 1) open.pop_back();
+        i = skip_past(i + 2, ">");
+      } else {
+        size_t j = i + 1;
+        while (j < s_.size() && !is_space(s_[j]) && s_[j] != '/' && s_[j] != '>') ++j;
+        bool is_use = s_.substr(i + 1, j - i - 1) == "use";
+        int node = int(nodes_.size());
+        nodes_.emplace_back();
+        nodes_[open.back()].children.push_back(node);
+        bool self_closing = false;
+        while (j < s_.size() && s_[j] != '>') {
+          if (is_space(s_[j]) || s_[j] == '/') {
+            self_closing = s_[j] == '/';
+            ++j;
+            continue;
+          }
+          self_closing = false;
+          size_t name_start = j;
+          while (j < s_.size() && !is_space(s_[j]) && s_[j] != '=' && s_[j] != '>' && s_[j] != '/') ++j;
+          std::string_view name = s_.substr(name_start, j - name_start);
+          while (j < s_.size() && is_space(s_[j])) ++j;
+          if (j >= s_.size() || s_[j] != '=') continue;
+          ++j;
+          while (j < s_.size() && is_space(s_[j])) ++j;
+          if (j >= s_.size() || (s_[j] != '"' && s_[j] != '\'')) continue;
+          size_t close = s_.find(s_[j], j + 1);
+          if (close == std::string_view::npos) return;  // unterminated: LunaSVG rejects it
+          std::string value = DecodeValue(s_.substr(j + 1, close - j - 1));
+          j = close + 1;
+          if (name == "id") {
+            ids_[value].push_back(node);
+          } else if (is_use && (name == "href" || name == "xlink:href") && !value.empty() &&
+                     value[0] == '#') {
+            nodes_[node].use_targets.push_back(value.substr(1));
+          }
+        }
+        i = j;
+        if (!self_closing) open.push_back(node);
+      }
     }
   }
-  return true;
-}
+
+  // Size and height of the tree LunaSVG builds under `node` after expanding
+  // <use>. Counts every candidate target twice: a copied <use> keeps its
+  // already expanded copy and gets expanded once more.
+  bool Expand(int node, int depth) {
+    if (depth > kMaxDepth) return Fail("SVG elements are nested deeper than 256 levels");
+    Expanded& memo = memo_[node];
+    if (memo.count >= 0) {
+      if (depth + memo.height > kMaxDepth)
+        return Fail("SVG elements are nested deeper than 256 levels");
+      result_ = memo;
+      return true;
+    }
+    active_[node] = true;
+    Expanded total = {1, 0, true};
+    auto add = [&](int child, int64_t weight) {
+      if (active_[child]) {  // LunaSVG stops reference cycles
+        total.exact = false;
+        return true;
+      }
+      if (!Expand(child, depth + 1)) return false;
+      total.count += weight * result_.count;
+      total.height = std::max(total.height, result_.height + 1);
+      total.exact = total.exact && result_.exact;
+      return total.count <= kMaxElements || Fail("SVG expands to too many elements");
+    };
+    for (int child : nodes_[node].children)
+      if (!add(child, 1)) return false;
+    for (const std::string& id : nodes_[node].use_targets) {
+      auto it = ids_.find(id);
+      if (it == ids_.end()) continue;
+      for (int target : it->second)
+        if (!add(target, 2)) return false;
+    }
+    active_[node] = false;
+    if (total.exact) memo = total;
+    result_ = total;
+    return true;
+  }
+
+  bool Fail(const char* message) {
+    error_ = message;
+    return false;
+  }
+
+  std::string_view s_;
+  std::vector<ScanNode> nodes_;
+  std::unordered_map<std::string, std::vector<int>> ids_;
+  std::vector<Expanded> memo_;
+  std::vector<bool> active_;
+  Expanded result_ = {0, 0, true};
+  const char* error_ = nullptr;
+};
 
 // plutovg dashes a path with no upper bound and loops forever once one dash is
 // below float precision of the path length. Like Skia, stop dashing past a
@@ -151,8 +327,8 @@ struct Document {
 
 std::unique_ptr<Document> Load(py::bytes data) {
   std::string_view view = data;
-  if (!NestingWithinLimit(view)) {
-    PyErr_Format(PyExc_OSError, "SVG elements are nested deeper than %d levels", kMaxDepth);
+  if (const char* error = StructureCheck(view).Run()) {
+    PyErr_SetString(PyExc_OSError, error);
     throw py::error_already_set();
   }
   auto result = std::make_unique<Document>();

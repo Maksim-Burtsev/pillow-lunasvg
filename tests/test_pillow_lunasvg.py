@@ -4,6 +4,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 
 import pytest
 from PIL import Image, UnidentifiedImageError
@@ -247,6 +248,52 @@ def test_hostile_use_cycles():
         '<rect width="2" height="2"/></svg>'
     )
     assert "bbox (0, 0, 2, 2)" in run_isolated(svg)
+
+
+def doubling_use_chain(levels: int, href: str = "href") -> str:
+    parts = ['<g id="g0"><rect width="1" height="1"/></g>'] + [
+        f'<g id="g{i}"><use {href}="#g{i - 1}"/><use {href}="#g{i - 1}"/></g>' for i in range(1, levels)
+    ]
+    return (
+        f'<svg {NS} xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><defs>'
+        + "".join(parts)
+        + f'</defs><use href="#g{levels - 1}"/></svg>'
+    )
+
+
+@pytest.mark.parametrize("href", ["href", "xlink:href"])
+def test_hostile_use_expansion(href):
+    start = time.monotonic()
+    assert "too many elements" in run_isolated(doubling_use_chain(30, href))
+    assert time.monotonic() - start < 2
+
+
+def test_hostile_use_expansion_with_entity_encoded_href():
+    svg = doubling_use_chain(30).replace('href="#', 'href="&#x23;')
+    assert "too many elements" in run_isolated(svg)
+
+
+def test_hostile_use_expanded_depth():
+    def deep(inner: str) -> str:
+        return "<g>" * 200 + inner + "</g>" * 200
+
+    rect = '<rect width="1" height="1"/>'
+    use = '<use href="#a"/>'
+    svg = (
+        f'<svg {NS} width="10" height="10"><defs><g id="a">{deep(rect)}</g>'
+        f'<g id="b">{deep(use)}</g></defs><use href="#b"/></svg>'
+    )
+    assert "nested deeper than" in run_isolated(svg)
+
+
+def test_icon_with_a_few_uses_renders():
+    svg = (
+        f'<svg {NS} width="10" height="10"><defs><symbol id="dot" viewBox="0 0 2 2">'
+        '<rect width="2" height="2" fill="red"/></symbol></defs>'
+        '<use href="#dot" width="2" height="2"/><use href="#dot" x="4" width="2" height="2"/>'
+        '<use href="#dot" x="8" y="8" width="2" height="2"/></svg>'
+    )
+    assert "bbox (0, 0, 10, 10)" in run_isolated(svg)
 
 
 @pytest.mark.parametrize(
