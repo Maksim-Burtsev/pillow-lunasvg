@@ -75,4 +75,4 @@ test-command = "pytest {project}/tests"
 test-skip = "*-macosx_x86_64"
 
 [tool.cibuildwheel.macos.environment]
-MACOSX_DEPLOYMENT_TARGET = "10.9"
+MACOSX_DEPLOYMENT_TARGET = "10.13"
