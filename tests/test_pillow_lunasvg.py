@@ -296,6 +296,21 @@ def test_icon_with_a_few_uses_renders():
     assert "bbox (0, 0, 10, 10)" in run_isolated(svg)
 
 
+def test_flat_document_is_not_limited():
+    # 250 000 plain elements: nothing is copied by <use>, so no budget applies.
+    svg = f'<svg {NS} width="10" height="10">' + '<rect width="5" height="5"/>' * 250_000 + "</svg>"
+    assert "bbox (0, 0, 5, 5)" in run_isolated(svg)
+
+
+def test_sprite_sheet_renders():
+    uses = "".join(f'<use href="#dot" x="{i % 100}" y="{i // 100}" width="1" height="1"/>' for i in range(5000))
+    svg = (
+        f'<svg {NS} width="100" height="50"><defs><symbol id="dot" viewBox="0 0 1 1">'
+        f'<rect width="1" height="1" fill="red"/></symbol></defs>{uses}</svg>'
+    )
+    assert "bbox (0, 0, 100, 50)" in run_isolated(svg)
+
+
 @pytest.mark.parametrize(
     "dash",
     [

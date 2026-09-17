@@ -142,10 +142,12 @@ The plugin is meant to be usable for thumbnailing untrusted uploads.
 - **Nesting depth** is limited to 256 levels of elements, including depth
   added by `<use>` expansion (the renderer is recursive; deeper documents
   would overflow the stack). Deeper documents raise `OSError`.
-- **`<use>` expansion** is limited to 200 000 elements. A short chain of
-  `<use>` elements, each copying a group that uses the previous one twice,
-  otherwise expands exponentially; such documents raise `OSError`. Self-referencing and
-  mutually referencing `<use>` elements are skipped by LunaSVG.
+- **`<use>` expansion** is limited to 1 000 000 *copied* elements. A short
+  chain of `<use>` elements, each copying a group that uses the previous one
+  twice, otherwise expands exponentially; such documents raise `OSError`. Only
+  the copies count: a document without `<use>` is never rejected for its size,
+  however many elements it has. Self-referencing and mutually referencing
+  `<use>` elements are skipped by LunaSVG.
 - **Dashes** are limited to about 1 000 000 per document: past that budget
   the remaining dashed strokes are drawn solid instead of hanging on a
   `stroke-dasharray` far smaller than the path. Dash lengths in `%` cannot be

@@ -31,8 +31,10 @@ std::mutex g_lunasvg_mutex;
 constexpr int kMaxDepth = 256;
 
 // LunaSVG expands every <use> into a deep copy of its target, and a copied
-// <use> is expanded again, so a short chain of <use> grows exponentially.
-constexpr int64_t kMaxElements = 200000;
+// <use> is expanded again, so a short chain of <use> grows exponentially. Only
+// the copies are budgeted: a document without <use> is as large as it is
+// written, and LunaSVG handles a flat million elements in about a second.
+constexpr int64_t kMaxClonedElements = 1000000;
 
 // Attribute values as LunaSVG's decodeText() sees them: character and the five
 // predefined entity references; on a malformed reference it keeps the prefix.
@@ -103,7 +105,8 @@ struct ScanNode {
 };
 
 struct Expanded {
-  int64_t count;
+  int64_t count;    // elements LunaSVG builds for this subtree, <use> expanded
+  int64_t created;  // of those, the ones a <use> copied into it
   int height;
   bool exact;  // false if a reference cycle was cut, so the result must not be memoized
 };
@@ -115,7 +118,7 @@ class StructureCheck {
   // Returns an error message, or nullptr if the document is within limits.
   const char* Run() {
     Tokenize();
-    memo_.assign(nodes_.size(), {-1, 0, true});
+    memo_.assign(nodes_.size(), {-1, 0, 0, true});
     active_.assign(nodes_.size(), false);
     if (!Expand(0, 0)) return error_;
     return nullptr;
@@ -191,8 +194,9 @@ class StructureCheck {
   }
 
   // Size and height of the tree LunaSVG builds under `node` after expanding
-  // <use>. Counts every candidate target twice: a copied <use> keeps its
-  // already expanded copy and gets expanded once more.
+  // <use>, and how much of it a <use> copied there. Counts every candidate
+  // target twice: a copied <use> keeps its already expanded copy and gets
+  // expanded once more.
   bool Expand(int node, int depth) {
     if (depth > kMaxDepth) return Fail("SVG elements are nested deeper than 256 levels");
     Expanded& memo = memo_[node];
@@ -203,25 +207,30 @@ class StructureCheck {
       return true;
     }
     active_[node] = true;
-    Expanded total = {1, 0, true};
-    auto add = [&](int child, int64_t weight) {
+    Expanded total = {1, 0, 0, true};
+    auto add = [&](int child, bool copied) {
       if (active_[child]) {  // LunaSVG stops reference cycles
         total.exact = false;
         return true;
       }
       if (!Expand(child, depth + 1)) return false;
-      total.count += weight * result_.count;
+      // A <use> copies its target as already expanded and every copied <use>
+      // in it is then expanded once more, so a target of a <use> contributes
+      // its expanded size plus the copies inside it.
+      int64_t copy = result_.count + result_.created;
+      total.count += copied ? copy : result_.count;
+      total.created += copied ? copy : result_.created;
       total.height = std::max(total.height, result_.height + 1);
       total.exact = total.exact && result_.exact;
-      return total.count <= kMaxElements || Fail("SVG expands to too many elements");
+      return total.created <= kMaxClonedElements || Fail("SVG expands to too many elements");
     };
     for (int child : nodes_[node].children)
-      if (!add(child, 1)) return false;
+      if (!add(child, false)) return false;
     for (const std::string& id : nodes_[node].use_targets) {
       auto it = ids_.find(id);
       if (it == ids_.end()) continue;
       for (int target : it->second)
-        if (!add(target, 2)) return false;
+        if (!add(target, true)) return false;
     }
     active_[node] = false;
     if (total.exact) memo = total;
@@ -239,7 +248,7 @@ class StructureCheck {
   std::unordered_map<std::string, std::vector<int>> ids_;
   std::vector<Expanded> memo_;
   std::vector<bool> active_;
-  Expanded result_ = {0, 0, true};
+  Expanded result_ = {0, 0, 0, true};
   const char* error_ = nullptr;
 };
 
