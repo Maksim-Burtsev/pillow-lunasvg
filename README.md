@@ -106,6 +106,10 @@ code (`thumbnail`, `convert`, `save`) works on SVG files unchanged.
 Methodology, per-category fidelity, observed failure causes, sample renders
 and exact commands: [benchmarks/results.md](benchmarks/results.md).
 
+The plugin's output is also checked pixel for pixel against LunaSVG's own
+`svg2png` on both corpora (4,801 of 4,802 files identical, the last one fails
+in both): [benchmarks/parity.md](benchmarks/parity.md).
+
 ## What is supported
 
 LunaSVG covers most of SVG 1.1 and SVG Tiny 1.2 static content: shapes and
