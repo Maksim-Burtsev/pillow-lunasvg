@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -195,9 +196,8 @@ class StructureCheck {
   }
 
   // Size and height of the tree LunaSVG builds under `node` after expanding
-  // <use>, and how much of it a <use> copied there. Counts every candidate
-  // target twice: a copied <use> keeps its already expanded copy and gets
-  // expanded once more.
+  // <use>, and how much of it a <use> copied there. Every candidate target of
+  // a <use> counts, since which one it resolves to is decided later.
   bool Expand(int node, int depth) {
     if (depth > kMaxDepth) return Fail("SVG elements are nested deeper than 256 levels");
     Expanded& memo = memo_[node];
@@ -261,7 +261,8 @@ constexpr double kMaxDashes = 1e6;
 bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
 // Parses a number the way LunaSVG does; false on anything else, including inf,
-// nan and hex, which strtod accepts but LunaSVG rejects.
+// nan, hex and anything past the float range, which strtod accepts but LunaSVG
+// rejects.
 bool ParseNumber(const char*& p, double& value) {
   const char* start = p;
   while (std::isdigit(static_cast<unsigned char>(*p)) || std::strchr("+-.eE", *p) && *p) ++p;
@@ -271,7 +272,8 @@ bool ParseNumber(const char*& p, double& value) {
   std::string number(start, p);
   char* end;
   value = std::strtod(number.c_str(), &end);
-  return !*end && value == value;
+  constexpr double kMaxFloat = std::numeric_limits<float>::max();
+  return !*end && value >= -kMaxFloat && value <= kMaxFloat;
 }
 
 // Parses "<number><unit>"; false on a negative number, which LunaSVG rejects
