@@ -315,7 +315,7 @@ def test_sprite_sheet_renders():
     "dash",
     [
         'stroke-dasharray="0.0001"',
-        'style="stroke-dasharray: 0.5"',
+        'style="stroke-dasharray: 0.005"',
         'stroke-dasharray="0.0001em"',
         'font-size="0.00001" stroke-dasharray="1em"',
         'font-size="1e-5em" stroke-dasharray="1ex"',
@@ -335,6 +335,16 @@ def test_hostile_inherited_dasharray_on_polyline():
     points = " ".join(f"{x},{x % 2 * 100}" for x in range(20000))
     svg = f'<svg {NS} width="100" height="100"><g stroke-dasharray="0.01"><polyline points="{points}" stroke="black" fill="none"/></g></svg>'
     assert "bbox" in run_isolated(svg)
+
+
+def test_map_with_many_dashed_paths_keeps_its_dashes():
+    # 12 000 dashed "roads" of 100 dashes each: 1.2 million dashes, over the
+    # budget this used to have, so even the last road must still be dashed.
+    road = '<path d="M0 {y} L2000 {y}" stroke="black" stroke-width="4" fill="none" stroke-dasharray="10"/>'
+    roads = "".join(road.format(y=i % 80) for i in range(11_999)) + road.format(y=95)
+    im = open_svg(f'<svg {NS} width="100" height="100">{roads}</svg>')
+    assert im.getpixel((5, 95))[3] == 255
+    assert im.getpixel((15, 95))[3] == 0
 
 
 def test_normal_dashes_still_render():

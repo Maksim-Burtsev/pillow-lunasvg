@@ -254,9 +254,12 @@ class StructureCheck {
 };
 
 // plutovg dashes a path with no upper bound and loops forever once one dash is
-// below float precision of the path length. Like Skia, stop dashing past a
-// budget: remaining elements are stroked solid.
-constexpr double kMaxDashes = 1e6;
+// below float precision of the path length. Skia caps one path at 1 000 000
+// dashes and strokes it undashed past that (SkDashPath.cpp, kMaxDashCount);
+// this is the same fallback with a per-document budget, sized so the dashes it
+// does draw stay near a second of rendering: 2 000 000 dashes spread over
+// 20 000 paths render in about 1.5 s.
+constexpr double kMaxDashes = 2e6;
 
 bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 

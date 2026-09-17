@@ -150,7 +150,7 @@ crash or hang, and except that external file references are disabled.
   the copies count: a document without `<use>` is never rejected for its size,
   however many elements it has. Self-referencing and mutually referencing
   `<use>` elements are skipped by LunaSVG.
-- **Dashes** are limited to about 1 000 000 per document: past that budget
+- **Dashes** are limited to about 2 000 000 per document: past that budget
   the remaining dashed strokes are drawn solid instead of hanging on a
   `stroke-dasharray` far smaller than the path. Below the budget the dashes
   are the ones LunaSVG would draw, whatever unit they are written in
