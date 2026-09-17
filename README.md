@@ -148,7 +148,8 @@ The plugin is meant to be usable for thumbnailing untrusted uploads.
   mutually referencing `<use>` elements are skipped by LunaSVG.
 - **Dashes** are limited to about 1 000 000 per document: past that budget
   the remaining dashed strokes are drawn solid instead of hanging on a
-  `stroke-dasharray` far smaller than the path.
+  `stroke-dasharray` far smaller than the path. Dash lengths in `%` cannot be
+  bounded before rendering, so those strokes are always drawn solid.
 - XML entity expansion ("billion laughs") does not apply: LunaSVG skips the
   DOCTYPE internal subset and never expands custom entities.
 

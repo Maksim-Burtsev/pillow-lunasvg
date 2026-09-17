@@ -302,6 +302,11 @@ def test_icon_with_a_few_uses_renders():
         'stroke-dasharray="0.0001"',
         'style="stroke-dasharray: 0.5"',
         'stroke-dasharray="0.0001em"',
+        'font-size="0.00001" stroke-dasharray="1em"',
+        'font-size="1e-5em" stroke-dasharray="1ex"',
+        'stroke-dasharray="1%"',
+        'font-size="0" stroke-dasharray="0.0001em"',
+        'font-size="1e9" stroke-dasharray="0.0001em"',
     ],
 )
 def test_hostile_dasharray(dash):
@@ -321,6 +326,12 @@ def test_normal_dashes_still_render():
     im = open_svg(f'<svg {NS} width="20" height="4"><path d="M0 2 L20 2" stroke="black" stroke-width="4" stroke-dasharray="5"/></svg>')
     assert im.getpixel((2, 2))[3] == 255
     assert im.getpixel((7, 2))[3] == 0
+
+
+def test_em_dashes_still_render():
+    im = open_svg(f'<svg {NS} width="60" height="4"><path d="M0 2 L60 2" stroke="black" stroke-width="4" stroke-dasharray="2em"/></svg>')
+    assert im.getpixel((2, 2))[3] == 255
+    assert im.getpixel((30, 2))[3] == 0
 
 
 def test_hostile_billion_laughs():

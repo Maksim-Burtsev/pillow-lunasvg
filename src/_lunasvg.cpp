@@ -248,9 +248,45 @@ class StructureCheck {
 // budget: remaining elements are stroked solid.
 constexpr double kMaxDashes = 1e6;
 
+// Parses "<number><unit>" the way LunaSVG does; false on anything else, including
+// inf, nan and hex, which strtod accepts but LunaSVG rejects.
+bool ParseLength(const char*& p, double& value, std::string& unit) {
+  const char* start = p;
+  while (std::isdigit(static_cast<unsigned char>(*p)) || std::strchr("+-.eE", *p) && *p) ++p;
+  // Give back an exponent marker that starts a unit (em, ex).
+  while (p > start && (p[-1] == 'e' || p[-1] == 'E')) --p;
+  if (p == start) return false;
+  std::string number(start, p);
+  char* end;
+  value = std::strtod(number.c_str(), &end);
+  if (*end || !(value >= 0)) return false;
+  unit.clear();
+  while (std::isalpha(static_cast<unsigned char>(*p)) || *p == '%') unit += *p++;
+  return true;
+}
+
+std::string Trim(const std::string& s) {
+  size_t b = s.find_first_not_of(" \t\r\n"), e = s.find_last_not_of(" \t\r\n");
+  return b == std::string::npos ? "" : s.substr(b, e - b + 1);
+}
+
+// font-size in user units as LunaSVG computes it (default 12); a lower bound
+// for absolute units. -1 if it cannot be resolved here.
+double FontSize(const std::string& attr, double parent) {
+  std::string v = Trim(attr);
+  const char* p = v.c_str();
+  double x;
+  std::string unit;
+  if (!ParseLength(p, x, unit) || *p) return -1;
+  if (unit == "em") return parent < 0 ? -1 : x * parent;
+  if (unit == "ex") return parent < 0 ? -1 : x * parent / 2;
+  if (unit == "%") return parent < 0 ? -1 : x * parent / 100;
+  return x;  // px, pt, pc, mm, cm, in only make it larger
+}
+
 // Length of one dash period in user units; 0 means no dashing; -1 means it
-// cannot be bounded here (em, ex and % depend on font size or viewport).
-double DashPeriod(const std::string& value) {
+// cannot be bounded here (% depends on the viewport, unresolved font-size).
+double DashPeriod(const std::string& value, double font_size) {
   if (value.empty() || value == "none") return 0;
   double sum = 0;
   int count = 0;
@@ -260,15 +296,17 @@ double DashPeriod(const std::string& value) {
       ++p;
       continue;
     }
-    char* end;
-    double x = std::strtod(p, &end);
-    if (end == p || !(x >= 0)) return -1;
-    p = end;
-    while (std::isalpha(static_cast<unsigned char>(*p)) || *p == '%') {
-      if (*p == 'e' || *p == '%') return -1;  // em, ex, %
-      ++p;  // px, pt, pc, mm, cm, in only make a dash longer
+    double x;
+    std::string unit;
+    if (!ParseLength(p, x, unit) || unit == "%") return -1;
+    if (unit == "em" || unit == "ex") {
+      // Strokes are resolved before layout stores the element's font-size, so
+      // LunaSVG uses 12 or the real size depending on how often it laid out.
+      double em = std::min(font_size, 12.0);
+      if (!(em > 0)) return -1;
+      x *= unit == "em" ? em : em / 2;
     }
-    sum += x;
+    sum += x;  // other units only make a dash longer
     ++count;
   }
   return count % 2 ? sum * 2 : sum;
@@ -295,12 +333,14 @@ double StrokeLength(const lunasvg::Element& e) {
   return factor * length;
 }
 
-void LimitDashes(const lunasvg::Element& e, double inherited, double& budget) {
-  double period = inherited;
+// stroke-dasharray is inherited as written and resolved per element.
+void LimitDashes(const lunasvg::Element& e, std::string dasharray, double font_size, double& budget) {
   if (e.hasAttribute("stroke-dasharray")) {
     const std::string& value = e.getAttribute("stroke-dasharray");
-    if (value != "inherit") period = DashPeriod(value);
+    if (value != "inherit") dasharray = value;
   }
+  if (e.hasAttribute("font-size")) font_size = FontSize(e.getAttribute("font-size"), font_size);
+  double period = DashPeriod(dasharray, font_size);
   if (period != 0 && (e.hasAttribute("d") || e.hasAttribute("points") || e.children().empty())) {
     double dashes = period < 0 ? budget + 1 : StrokeLength(e) / period;
     if (dashes > budget) {
@@ -310,7 +350,7 @@ void LimitDashes(const lunasvg::Element& e, double inherited, double& budget) {
     }
   }
   for (const lunasvg::Node& child : e.children())
-    if (child.isElement()) LimitDashes(child.toElement(), period, budget);
+    if (child.isElement()) LimitDashes(child.toElement(), dasharray, font_size, budget);
 }
 
 struct Document {
@@ -338,7 +378,7 @@ std::unique_ptr<Document> Load(py::bytes data) {
     result->doc = lunasvg::Document::loadFromData(view.data(), view.size());
     if (!result->doc) return nullptr;
     double budget = kMaxDashes;
-    LimitDashes(result->doc->documentElement(), 0, budget);
+    LimitDashes(result->doc->documentElement(), "", 12, budget);
     result->width = result->doc->width();
     result->height = result->doc->height();
   }
