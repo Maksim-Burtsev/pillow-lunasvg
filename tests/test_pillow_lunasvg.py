@@ -319,7 +319,7 @@ def test_sprite_sheet_renders():
         'stroke-dasharray="0.0001em"',
         'font-size="0.00001" stroke-dasharray="1em"',
         'font-size="1e-5em" stroke-dasharray="1ex"',
-        'stroke-dasharray="1%"',
+        'stroke-dasharray="0.0001%"',
         'font-size="0" stroke-dasharray="0.0001em"',
         'font-size="1e9" stroke-dasharray="0.0001em"',
     ],
@@ -341,6 +341,37 @@ def test_normal_dashes_still_render():
     im = open_svg(f'<svg {NS} width="20" height="4"><path d="M0 2 L20 2" stroke="black" stroke-width="4" stroke-dasharray="5"/></svg>')
     assert im.getpixel((2, 2))[3] == 255
     assert im.getpixel((7, 2))[3] == 0
+
+
+def test_percent_dashes_still_render():
+    # 10% of the viewBox diagonal (200) is a 20 long dash and a 20 long gap.
+    im = open_svg(
+        f'<svg {NS} width="200" height="200" viewBox="0 0 200 200">'
+        '<path d="M0 100 L200 100" stroke="black" stroke-width="4" stroke-dasharray="10%"/></svg>'
+    )
+    assert im.getpixel((5, 100))[3] == 255
+    assert im.getpixel((25, 100))[3] == 0
+
+
+def test_hostile_percent_dashes_in_a_nested_viewport():
+    # The dash is 1% of the *inner* viewport; measured against the outer one it
+    # would look like 100 harmless dashes instead of 10 billion.
+    svg = (
+        f'<svg {NS} width="100" height="100" viewBox="0 0 2000000 2000000">'
+        '<svg width="0.01" height="0.01">'
+        '<path d="M0 50 L2000000 50" stroke="black" stroke-width="4" stroke-dasharray="1%"/>'
+        "</svg></svg>"
+    )
+    assert "bbox" in run_isolated(svg)
+
+
+def test_percent_dashes_in_a_zero_viewport_are_solid():
+    # Every dash resolves to 0, which LunaSVG strokes solid instead of hanging.
+    svg = (
+        f'<svg {NS} width="100" height="100" viewBox="0 0 0 0">'
+        '<path d="M0 50 L2000000 50" stroke="black" stroke-width="4" stroke-dasharray="1%"/></svg>'
+    )
+    assert "bbox (0, 48, 100, 52)" in run_isolated(svg)
 
 
 def test_em_dashes_still_render():

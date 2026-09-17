@@ -2,6 +2,7 @@
 #include <climits>
 #include <cstdlib>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -257,9 +258,11 @@ class StructureCheck {
 // budget: remaining elements are stroked solid.
 constexpr double kMaxDashes = 1e6;
 
-// Parses "<number><unit>" the way LunaSVG does; false on anything else, including
-// inf, nan and hex, which strtod accepts but LunaSVG rejects.
-bool ParseLength(const char*& p, double& value, std::string& unit) {
+bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
+// Parses a number the way LunaSVG does; false on anything else, including inf,
+// nan and hex, which strtod accepts but LunaSVG rejects.
+bool ParseNumber(const char*& p, double& value) {
   const char* start = p;
   while (std::isdigit(static_cast<unsigned char>(*p)) || std::strchr("+-.eE", *p) && *p) ++p;
   // Give back an exponent marker that starts a unit (em, ex).
@@ -268,7 +271,13 @@ bool ParseLength(const char*& p, double& value, std::string& unit) {
   std::string number(start, p);
   char* end;
   value = std::strtod(number.c_str(), &end);
-  if (*end || !(value >= 0)) return false;
+  return !*end && value == value;
+}
+
+// Parses "<number><unit>"; false on a negative number, which LunaSVG rejects
+// for every length this file resolves.
+bool ParseLength(const char*& p, double& value, std::string& unit) {
+  if (!ParseNumber(p, value) || !(value >= 0)) return false;
   unit.clear();
   while (std::isalpha(static_cast<unsigned char>(*p)) || *p == '%') unit += *p++;
   return true;
@@ -279,23 +288,90 @@ std::string Trim(const std::string& s) {
   return b == std::string::npos ? "" : s.substr(b, e - b + 1);
 }
 
-// font-size in user units as LunaSVG computes it (default 12); a lower bound
-// for absolute units. -1 if it cannot be resolved here.
+// One length in user units, as LunaSVG's Length::parse and
+// LengthContext::valueForLength resolve it: `percent_base` is what a % is
+// measured against, `em_base` the font size an em is. -1 means the length
+// cannot be resolved here, either because a base is unknown (-1) or because
+// LunaSVG rejects the unit, which drops the whole value.
+double ToUserUnits(double x, const std::string& unit, double percent_base, double em_base) {
+  constexpr double kDpi = 96;
+  if (unit.empty() || unit == "px") return x;
+  if (unit == "pt") return x * kDpi / 72;
+  if (unit == "pc") return x * kDpi / 6;
+  if (unit == "in") return x * kDpi;
+  if (unit == "cm") return x * kDpi / 2.54;
+  if (unit == "mm") return x * kDpi / 25.4;
+  if (unit == "%") return percent_base < 0 ? -1 : x * percent_base / 100;
+  if (unit == "em") return em_base > 0 ? x * em_base : -1;
+  if (unit == "ex") return em_base > 0 ? x * em_base / 2 : -1;
+  return -1;
+}
+
+// font-size in user units as LunaSVG computes it; anything it cannot parse is
+// the 12 default.
 double FontSize(const std::string& attr, double parent) {
   std::string v = Trim(attr);
   const char* p = v.c_str();
-  double x;
+  double x, size = -1;
   std::string unit;
-  if (!ParseLength(p, x, unit) || *p) return -1;
-  if (unit == "em") return parent < 0 ? -1 : x * parent;
-  if (unit == "ex") return parent < 0 ? -1 : x * parent / 2;
-  if (unit == "%") return parent < 0 ? -1 : x * parent / 100;
-  return x;  // px, pt, pc, mm, cm, in only make it larger
+  if (ParseLength(p, x, unit) && !*p) size = ToUserUnits(x, unit, parent, parent);
+  return size < 0 ? 12 : size;
+}
+
+// The viewport a % length is measured against, as
+// SVGElement::currentViewportSize computes it; a dimension is -1 when it
+// cannot be resolved here.
+struct Viewport {
+  double w, h;
+
+  // What a % in stroke data resolves against (LengthDirection::Diagonal).
+  double diagonal() const {
+    if (w < 0 || h < 0) return -1;
+    return std::sqrt(w * w + h * h) / std::sqrt(2.0);
+  }
+};
+
+// viewBox="x y w h" as LunaSVG's SVGRect::parse reads it.
+bool ParseViewBox(const std::string& attr, Viewport& viewport) {
+  std::string v = Trim(attr);
+  const char* p = v.c_str();
+  double n[4];
+  for (int i = 0; i < 4; ++i) {
+    if (i) {  // skipOptionalSpacesOrComma: spaces around at most one comma
+      if (!IsSpace(*p) && *p != ',') return false;
+      while (IsSpace(*p)) ++p;
+      if (*p == ',') ++p;
+      while (IsSpace(*p)) ++p;
+    }
+    if (!ParseNumber(p, n[i])) return false;
+  }
+  if (*p || !(n[2] >= 0) || !(n[3] >= 0)) return false;
+  viewport = {n[2], n[3]};
+  return true;
+}
+
+// The viewport the children of an <svg> element see: its viewBox, or its
+// width and height, which default to 100% of the viewport it sits in.
+Viewport ChildViewport(const lunasvg::Element& e, Viewport viewport, double font_size) {
+  Viewport box;
+  if (ParseViewBox(e.getAttribute("viewBox"), box)) return box;
+  double size[2] = {viewport.w, viewport.h};
+  const char* names[2] = {"width", "height"};
+  for (int i = 0; i < 2; ++i) {
+    std::string v = Trim(e.getAttribute(names[i]));
+    const char* p = v.c_str();
+    double x;
+    std::string unit;
+    if (v.empty() || !ParseLength(p, x, unit) || *p) continue;  // invalid: keeps the 100% default
+    double length = ToUserUnits(x, unit, size[i], font_size);
+    if (length >= 0) size[i] = length;
+  }
+  return {size[0], size[1]};
 }
 
 // Length of one dash period in user units; 0 means no dashing; -1 means it
-// cannot be bounded here (% depends on the viewport, unresolved font-size).
-double DashPeriod(const std::string& value, double font_size) {
+// cannot be bounded here.
+double DashPeriod(const std::string& value, double font_size, double percent_base) {
   if (value.empty() || value == "none") return 0;
   double sum = 0;
   int count = 0;
@@ -307,15 +383,13 @@ double DashPeriod(const std::string& value, double font_size) {
     }
     double x;
     std::string unit;
-    if (!ParseLength(p, x, unit) || unit == "%") return -1;
-    if (unit == "em" || unit == "ex") {
-      // Strokes are resolved before layout stores the element's font-size, so
-      // LunaSVG uses 12 or the real size depending on how often it laid out.
-      double em = std::min(font_size, 12.0);
-      if (!(em > 0)) return -1;
-      x *= unit == "em" ? em : em / 2;
-    }
-    sum += x;  // other units only make a dash longer
+    if (!ParseLength(p, x, unit)) return -1;
+    // Strokes are resolved before layout stores the element's own font-size, so
+    // LunaSVG uses 12 or the real size depending on how often it laid out. The
+    // viewport has no such ordering: it comes from an ancestor, already laid out.
+    double length = ToUserUnits(x, unit, percent_base, std::min(font_size, 12.0));
+    if (length < 0) return -1;
+    sum += length;
     ++count;
   }
   return count % 2 ? sum * 2 : sum;
@@ -342,14 +416,20 @@ double StrokeLength(const lunasvg::Element& e) {
   return factor * length;
 }
 
-// stroke-dasharray is inherited as written and resolved per element.
-void LimitDashes(const lunasvg::Element& e, std::string dasharray, double font_size, double& budget) {
+// stroke-dasharray is inherited as written and resolved per element. `svgs`
+// holds the document's <svg> elements in document order, the order this walk
+// visits them in, because the public API cannot tell an element's name.
+void LimitDashes(const lunasvg::Element& e, std::string dasharray, double font_size,
+                 Viewport viewport, const lunasvg::ElementList& svgs, size_t& next_svg,
+                 double& budget) {
+  bool is_svg = next_svg < svgs.size() && svgs[next_svg] == e;
+  if (is_svg) ++next_svg;
   if (e.hasAttribute("stroke-dasharray")) {
     const std::string& value = e.getAttribute("stroke-dasharray");
     if (value != "inherit") dasharray = value;
   }
   if (e.hasAttribute("font-size")) font_size = FontSize(e.getAttribute("font-size"), font_size);
-  double period = DashPeriod(dasharray, font_size);
+  double period = DashPeriod(dasharray, font_size, viewport.diagonal());
   if (period != 0 && (e.hasAttribute("d") || e.hasAttribute("points") || e.children().empty())) {
     double dashes = period < 0 ? budget + 1 : StrokeLength(e) / period;
     if (dashes > budget) {
@@ -358,8 +438,10 @@ void LimitDashes(const lunasvg::Element& e, std::string dasharray, double font_s
       budget -= dashes;
     }
   }
+  if (is_svg) viewport = ChildViewport(e, viewport, font_size);
   for (const lunasvg::Node& child : e.children())
-    if (child.isElement()) LimitDashes(child.toElement(), dasharray, font_size, budget);
+    if (child.isElement())
+      LimitDashes(child.toElement(), dasharray, font_size, viewport, svgs, next_svg, budget);
 }
 
 struct Document {
@@ -386,8 +468,14 @@ std::unique_ptr<Document> Load(py::bytes data) {
     std::lock_guard<std::mutex> lock(g_lunasvg_mutex);
     result->doc = lunasvg::Document::loadFromData(view.data(), view.size());
     if (!result->doc) return nullptr;
+    lunasvg::Element root = result->doc->documentElement();
+    // The root <svg> is its own viewport: its viewBox, or 300x150 if it has none.
+    Viewport viewport = {300, 150};
+    ParseViewBox(root.getAttribute("viewBox"), viewport);
+    lunasvg::ElementList svgs = result->doc->querySelectorAll("svg");
+    size_t next_svg = 0;
     double budget = kMaxDashes;
-    LimitDashes(result->doc->documentElement(), "", 12, budget);
+    LimitDashes(root, "", 12, viewport, svgs, next_svg, budget);
     result->width = result->doc->width();
     result->height = result->doc->height();
   }

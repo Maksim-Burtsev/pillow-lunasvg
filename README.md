@@ -129,7 +129,9 @@ Open an issue if you need one of these.
 
 ## Security
 
-The plugin is meant to be usable for thumbnailing untrusted uploads.
+The plugin is meant to be usable for thumbnailing untrusted uploads. What
+it draws is pixel for pixel what LunaSVG draws, except where LunaSVG would
+crash or hang, and except that external file references are disabled.
 
 - **External references are disabled** at build time
   (`LUNASVG_DISABLE_EXTERNAL_RESOURCES`): an SVG cannot make the renderer read
@@ -150,8 +152,9 @@ The plugin is meant to be usable for thumbnailing untrusted uploads.
   `<use>` elements are skipped by LunaSVG.
 - **Dashes** are limited to about 1 000 000 per document: past that budget
   the remaining dashed strokes are drawn solid instead of hanging on a
-  `stroke-dasharray` far smaller than the path. Dash lengths in `%` cannot be
-  bounded before rendering, so those strokes are always drawn solid.
+  `stroke-dasharray` far smaller than the path. Below the budget the dashes
+  are the ones LunaSVG would draw, whatever unit they are written in
+  (`%` of the current viewport, `em`, `ex`, `mm`, ...).
 - XML entity expansion ("billion laughs") does not apply: LunaSVG skips the
   DOCTYPE internal subset and never expands custom entities.
 
