@@ -22,7 +22,7 @@ pip install pillow-lunasvg
 ```
 
 Wheels for Linux (glibc and musl; x86_64, aarch64), macOS (arm64, x86_64) and
-Windows (AMD64), CPython 3.10–3.14. No system libraries: LunaSVG and its
+Windows (AMD64), CPython 3.10–3.15. No system libraries: LunaSVG and its
 rasterizer plutovg are compiled into the wheel. Building the sdist needs CMake
 and a C++17 compiler.
 

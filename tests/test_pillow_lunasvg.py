@@ -22,7 +22,7 @@ def open_svg(svg: str | bytes) -> Image.Image:
 
 
 def test_versions():
-    assert pillow_lunasvg.__version__ == "0.1.0"
+    assert pillow_lunasvg.__version__ == "0.1.1"
     assert pillow_lunasvg.lunasvg_version.count(".") == 2
 
 
