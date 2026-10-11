@@ -9,7 +9,7 @@ from PIL import Image, ImageFile
 
 from . import _lunasvg
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 lunasvg_version: str = _lunasvg.lunasvg_version
 
 __all__ = ["SvgImageFile", "__version__", "add_font_file", "lunasvg_version"]
